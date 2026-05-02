@@ -21,10 +21,15 @@
 #include<ktx.h>
 #include<ktxvulkan.h>
 
+//For now, remember inside of the cpp equivalent of imgui_compile => we have used define for it to use volk
+
+#include "imgui_compile.h"
+
 #include<iostream>
 #include<vector>
 #include<array>
 #include<string>
+#include<fstream>
 
 struct ValidationHelpers {
 	void validateResult( bool result, std::string message = "ERROR!") {
@@ -38,6 +43,14 @@ struct ValidationHelpers {
 	void validateResult( VkResult result, std::string message = "ERROR!") {
 		if ( result!= VK_SUCCESS ) {
 			std::cout << std::endl << "ERROR: " << message << std::endl;
+			std::cout << "Exiting Program....";
+			exit(0);
+		}
+	}
+
+	static void imguiWrapper(VkResult result) {
+		if (result != VK_SUCCESS) {
+			std::cout << std::endl << "ERROR: " << std::endl;
 			std::cout << "Exiting Program....";
 			exit(0);
 		}
@@ -332,7 +345,7 @@ class Simulation {
 			}
 		}
 
-		void setupUI() {
+		void setupUIUI() {
 			windowConfiguration.window = SDL_CreateWindow(
 				windowConfiguration.windowName.c_str(),
 				windowConfiguration.windowWidth,
@@ -345,10 +358,58 @@ class Simulation {
 			validationHelpers.validateResult(SDL_Vulkan_CreateSurface(windowConfiguration.window, windowConfiguration.vkInstance, nullptr, &windowConfiguration.surface));
 			validationHelpers.validateResult(
 				vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-					deviceInterface.physical.devices[ deviceInterface.physical.index ],
+					deviceInterface.physical.devices[deviceInterface.physical.index],
 					windowConfiguration.surface, &windowConfiguration.surfaceCapabilities
 				)
 			);
+		}
+
+		void setupUI() {
+
+			VkDescriptorPoolSize pool_sizes[] = {
+				{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE },
+				{ VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE },
+			};
+
+			VkDescriptorPoolCreateInfo pool_info{
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+				.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+				.maxSets = 1000,
+				.poolSizeCount = (uint32_t)std::size(pool_sizes),
+				.pPoolSizes = pool_sizes
+			};
+
+			
+			vkCreateDescriptorPool( windowConfiguration.device, &pool_info, nullptr, &imguiPool);
+
+			IMGUI_CHECKVERSION();
+			ImGui::CreateContext();
+			ImGuiIO& io = ImGui::GetIO();
+			io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+			ImGui_ImplSDL3_InitForVulkan( windowConfiguration.window );
+			ImGui_ImplVulkan_InitInfo init_info = {};
+			init_info.ApiVersion = VK_API_VERSION_1_4; 
+			init_info.Instance = windowConfiguration.vkInstance;
+			init_info.PhysicalDevice = deviceInterface.physical.devices[ deviceInterface.physical.index ];
+			init_info.Device = windowConfiguration.device;
+			init_info.QueueFamily = deviceInterface.queue.index;
+			init_info.Queue = windowConfiguration.queue;
+			init_info.PipelineCache = pipelineCache;
+			init_info.DescriptorPool = imguiPool;
+			init_info.MinImageCount = windowConfiguration.surfaceCapabilities.minImageCount;
+			init_info.ImageCount = deviceInterface.logical.swapchainConfiguration.imageCount;
+			init_info.Allocator = nullptr;
+			init_info.UseDynamicRendering = true;
+			init_info.PipelineInfoMain.PipelineRenderingCreateInfo = {
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+				.colorAttachmentCount = 1,
+				.pColorAttachmentFormats = &deviceInterface.logical.swapchainConfiguration.imageFormat,
+				.depthAttachmentFormat = depthAttachmentConfiguration.format
+			};
+			init_info.CheckVkResultFn = ValidationHelpers::imguiWrapper;
+
+			ImGui_ImplVulkan_Init(&init_info);
 		}
 
 		void setupDepthAttachment() {
@@ -796,6 +857,27 @@ class Simulation {
 		};
 
 		void setupPipeline() {
+
+
+			std::vector<char> initialData;
+
+			std::ifstream file("pipeline.cache", std::ios::binary | std::ios::ate);
+			if (file.is_open()) {
+				size_t size = file.tellg();
+				initialData.resize(size);
+				file.seekg(0);
+				file.read(initialData.data(), size);
+				file.close();
+			}
+
+			VkPipelineCacheCreateInfo cacheInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+				.initialDataSize = initialData.size(),
+				.pInitialData = initialData.empty() ? nullptr : initialData.data()
+			};
+
+			vkCreatePipelineCache( windowConfiguration.device, &cacheInfo, nullptr, &pipelineCache);
+
 			VkPushConstantRange pushConstantRange{
 				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
 				.size = sizeof(PushConstants)
@@ -908,7 +990,19 @@ class Simulation {
 				.layout = pipelineLayout
 			};
 
-			validationHelpers.validateResult(vkCreateGraphicsPipelines(windowConfiguration.device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline), "Failed to Create Graphics Pipeline");
+			validationHelpers.validateResult(vkCreateGraphicsPipelines(windowConfiguration.device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipeline), "Failed to Create Graphics Pipeline");
+	
+			std::cout << "Pipeline handle: " << pipeline << std::endl;
+
+			size_t cacheSize = 0;
+			vkGetPipelineCacheData(windowConfiguration.device, pipelineCache, &cacheSize, nullptr);
+
+			std::vector<char> cacheData(cacheSize);
+			vkGetPipelineCacheData(windowConfiguration.device, pipelineCache, &cacheSize, cacheData.data());
+
+			// write to file
+			std::ofstream file2("pipeline.cache", std::ios::binary);
+			file2.write(cacheData.data(), cacheSize);
 		}
 
 		void animate() {
@@ -920,6 +1014,7 @@ class Simulation {
 				SDL_Event event;
 
 				while (SDL_PollEvent(&event)) {
+					ImGui_ImplSDL3_ProcessEvent(&event);
 					if (event.type == SDL_EVENT_QUIT) {
 						quit = true;
 					}
@@ -928,6 +1023,11 @@ class Simulation {
 						deviceInterface.logical.swapchainConfiguration.updateSwapchain = true;
 					}
 				}
+
+				ImGui_ImplVulkan_NewFrame();
+				ImGui_ImplSDL3_NewFrame();
+				ImGui::NewFrame();
+				ImGui::ShowDemoWindow();
 
 				validationHelpers.validateResult(vkWaitForFences( windowConfiguration.device, 1, &framesConfiguration.fences[framesConfiguration.frameIndex], true, UINT64_MAX));
 				validationHelpers.validateResult(vkResetFences( windowConfiguration.device, 1, &framesConfiguration.fences[framesConfiguration.frameIndex]));
@@ -973,7 +1073,7 @@ class Simulation {
 						.extent{
 							.width = static_cast<uint32_t>(windowConfiguration.windowSize.x),
 							.height = static_cast<uint32_t>(windowConfiguration.windowSize.y)
-						}
+						},
 					},
 					.layerCount = 1,
 					.colorAttachmentCount = 1,
@@ -1074,6 +1174,12 @@ class Simulation {
 
 				vkCmdEndRendering(commandBuffer);
 
+
+				ImGui::Render();
+				ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+
+				vkEndCommandBuffer(commandBuffer);
+
 				VkImageMemoryBarrier2 barrierPresent{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 					.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1092,7 +1198,7 @@ class Simulation {
 				};
 				vkCmdPipelineBarrier2(commandBuffer, &barrierPresentDependencyInfo);
 
-				vkEndCommandBuffer(commandBuffer);
+
 
 				VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 				VkSubmitInfo submitInfo{
@@ -1162,6 +1268,10 @@ class Simulation {
 					validationHelpers.validateResult(vkCreateImageView(windowConfiguration.device, &viewCI, nullptr, &depthAttachmentConfiguration.imageView), "Failed To Create Image View");
 				}
 			}
+
+			ImGui_ImplVulkan_Shutdown();
+			ImGui_ImplSDL3_Shutdown();
+			ImGui::DestroyContext();
 		}
 
 		void setup() {
@@ -1170,7 +1280,7 @@ class Simulation {
 			pickPhysicalDeviceAndQueue();
 			setupLogicalDevice();
 			setupVMA();
-			setupUI();
+			setupUIUI();
 			setupSwapChain();
 			setupDepthAttachment();
 			setupSynchronization();
@@ -1215,6 +1325,7 @@ class Simulation {
 
 		VkPipelineLayout pipelineLayout{};
 		VkPipeline pipeline{};
+		VkPipelineCache pipelineCache{};
 
 		struct GrassStrand {};
 
@@ -1245,6 +1356,8 @@ class Simulation {
 
 		};
 
+
+		VkDescriptorPool imguiPool;
 		struct ExtensionsInterface {
 			struct Instance {
 				uint32_t count{};
@@ -1254,6 +1367,7 @@ class Simulation {
 			struct Device {
 				const std::vector< const char* > extensions{
 					VK_KHR_SWAPCHAIN_EXTENSION_NAME
+
 				};
 			} device;
 		};
@@ -1401,6 +1515,7 @@ public:
 		simulation.setup();
 		simulation.uploadModel(models);
 		simulation.setupPipeline();
+		simulation.setupUI();
 		simulation.animate();
 	}
 
