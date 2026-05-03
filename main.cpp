@@ -21,7 +21,10 @@
 #include<ktx.h>
 #include<ktxvulkan.h>
 
+//currently, data might not be per mesh but collective for handlers buffers etc...
 //For now, remember inside of the cpp equivalent of imgui_compile => we have used define for it to use volk
+//cross quads for fuller flowers
+//removing LOD, because LOD is hard to think without chunking, so will implement it later with chunking
 
 #include "imgui_compile.h"
 
@@ -70,28 +73,15 @@ struct ValidationHelpers {
 	}
 };
 
-struct Vertex {
-	glm::vec3 position{};
-	glm::vec3 normal{};
-	glm::vec2 uv{};
-};
-
 class Mesh {
 public:
-	std::vector< Vertex > _vertices{};
 	std::vector< uint16_t > _indices{};
 
 	VkDeviceSize indicesBufferSize{};
-	VkDeviceSize verticesBufferSize{};
 
 public:
 	void compute() {
 		indicesBufferSize = _indices.size() * sizeof(uint16_t);
-		verticesBufferSize = _vertices.size() * sizeof(Vertex);
-	}
-
-	void setVertices(std::vector< Vertex > vertices) {
-		_vertices = vertices;
 	}
 
 	void setIndices(std::vector< uint16_t > indices) {
@@ -102,41 +92,20 @@ public:
 		return indicesBufferSize;
 	}
 
-	VkDeviceSize getVerticesBufferSize() {
-		return verticesBufferSize;
-	}
-
 public:
-	VkBuffer indicesBuffer{};
-	VkBuffer verticesBuffer{};
-
-	VmaAllocation indicesBufferAllocation{};
-	VmaAllocation verticesBufferAllocation{};
-
-	VmaAllocationInfo indicesBufferAllocationInfo{};
-	VmaAllocationInfo verticesBufferAllocationInfo{};
+		VkBuffer indicesBuffer{};
+		VmaAllocation indicesBufferAllocation{};
+		VmaAllocationInfo indicesBufferAllocationInfo{};
 
 	std::unordered_map< std::string, float > userData{};
 
-public:
-	struct UniformData {
-		struct Schema {
-			int segments{};
-			int vertices{};
-
-			glm::mat4 model{};
-		} schema{};
-
-		struct Handle {
-			VkBuffer buffer{ VK_NULL_HANDLE };
-
-			VmaAllocation allocation{ VK_NULL_HANDLE };
-			VmaAllocationInfo allocationInfo{};
-
-			VkDeviceAddress deviceAddress{};
-			void* mapped{ nullptr };
-		} buffer{};
-	} uniformData{};
+	glm::fvec3 BASE_COLOR;
+	glm::fvec3 TIP_COLOR;
+	glm::fvec3 PATCH_BASE_COLOR;
+	glm::fvec3 PATCH_TIP_COLOR;
+	std::string textureName{};
+	int textureIndex = -1;
+	bool patchyGrass = false;
 };
 
 class UserInterface {
@@ -533,10 +502,16 @@ class Simulation {
 		}
 
 		void loadTextures() {
-			for (uint32_t i = 0; i < textureNames.size(); i++) {
+			int textureSlot = 0;
+			for (uint32_t i = 0; i < meshes.size(); i++) {
+				
+				if (meshes[i].textureName == "") continue;
+
 				ktxTexture* ktxTexture{ nullptr };
-				std::string path = "assets/textures/" + textureNames[i];
+				std::string path = "assets/textures/" + meshes[i].textureName;
 				ktxTexture_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &ktxTexture);
+
+				meshes[i].textureIndex = textureSlot;
 
 				VkImageCreateInfo textureImageCreateInfo{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -556,11 +531,11 @@ class Simulation {
 				};
 
 				VmaAllocationCreateInfo textureImageAllocationCreateInfo{ .usage = VMA_MEMORY_USAGE_AUTO };
-				validationHelpers.validateResult(vmaCreateImage( windowConfiguration.allocator, &textureImageCreateInfo, &textureImageAllocationCreateInfo, &textureList[i].image, &textureList[i].allocation, nullptr), "Failed to Create Image for textures");
+				validationHelpers.validateResult(vmaCreateImage( windowConfiguration.allocator, &textureImageCreateInfo, &textureImageAllocationCreateInfo, &textureList[textureSlot].image, &textureList[textureSlot].allocation, nullptr), "Failed to Create Image for textures");
 
 				VkImageViewCreateInfo textureImageViewCreateInfo{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-					.image = textureList[i].image,
+					.image = textureList[textureSlot].image,
 					.viewType = VK_IMAGE_VIEW_TYPE_2D,
 					.format = textureImageCreateInfo.format,
 					.subresourceRange = {
@@ -570,7 +545,7 @@ class Simulation {
 					}
 				};
 
-				validationHelpers.validateResult(vkCreateImageView( windowConfiguration.device, &textureImageViewCreateInfo, nullptr, &textureList[i].view), "Failed to Create texture image view");
+				validationHelpers.validateResult(vkCreateImageView( windowConfiguration.device, &textureImageViewCreateInfo, nullptr, &textureList[textureSlot].view), "Failed to Create texture image view");
 
 				VkBuffer imageSourceBuffer{};
 				VmaAllocation imageSourceAllocation{};
@@ -622,7 +597,7 @@ class Simulation {
 					.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
 					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 					.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					.image = textureList[i].image,
+					.image = textureList[textureSlot].image,
 					.subresourceRange = {
 						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 						.levelCount = ktxTexture->numLevels,
@@ -654,9 +629,9 @@ class Simulation {
 							.height = ktxTexture->baseHeight >> j,
 							.depth = 1
 						}
-						});
+					});
 				}
-				vkCmdCopyBufferToImage(commandBufferOneTime, imageSourceBuffer, textureList[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
+				vkCmdCopyBufferToImage(commandBufferOneTime, imageSourceBuffer, textureList[textureSlot].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
 				VkImageMemoryBarrier2 barrierTextureRead{
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -666,7 +641,7 @@ class Simulation {
 					.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
 					.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 					.newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
-					.image = textureList[i].image,
+					.image = textureList[textureSlot].image,
 					.subresourceRange = {
 						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 						.levelCount = ktxTexture->numLevels,
@@ -699,14 +674,16 @@ class Simulation {
 					.maxLod = (float)ktxTexture->numLevels
 				};
 
-				validationHelpers.validateResult(vkCreateSampler( windowConfiguration.device, &samplerCreateInfo, nullptr, &textureList[i].sampler), "Failed to create sampler");
+				validationHelpers.validateResult(vkCreateSampler( windowConfiguration.device, &samplerCreateInfo, nullptr, &textureList[textureSlot].sampler), "Failed to create sampler");
 
 				ktxTexture_Destroy(ktxTexture);
 				textureDescriptors.push_back({
-					.sampler = textureList[i].sampler,
-					.imageView = textureList[i].view,
+					.sampler = textureList[textureSlot].sampler,
+					.imageView = textureList[textureSlot].view,
 					.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL
-					});
+				});
+
+				textureSlot = textureSlot + 1;
 			}
 
 			VkDescriptorPoolSize poolSize{
@@ -777,9 +754,19 @@ class Simulation {
 		void uploadModel(std::vector< Mesh >& models) {
 			meshes = models;
 
+			int textureCount = 0;
 			for (uint16_t index = 0; index < models.size(); index++) {
 				Mesh* mesh = &meshes[index];
 				mesh->compute();
+				if (mesh->textureName != "") textureCount = textureCount + 1;
+
+			}
+
+			textureList.resize(textureCount);
+			loadTextures();
+
+			for (uint16_t index = 0; index < models.size(); index++) {
+				Mesh* mesh = &meshes[index];
 
 				VkBufferCreateInfo bufferCreateInfo{
 					.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -796,11 +783,16 @@ class Simulation {
 				memcpy(mesh->indicesBufferAllocationInfo.pMappedData, mesh->_indices.data(), mesh->getIndicesBufferSize());
 				auto instancePos = glm::vec3(0.0f, 0.0f, 0.0f);
 				uniformData.meshData.push_back(UniformData::Mesh{
-					.model = glm::translate(glm::mat4(1.0f), instancePos),
 					.segments = mesh->userData["segments"],
 					.vertices = mesh->userData["vertices"],
-					.chunkSize = mesh->userData["chunkSize"]
-					});
+					.textureIndex = mesh->textureIndex,
+					.patchyGrass = mesh -> patchyGrass,
+					.model = glm::translate(glm::mat4(1.0f), instancePos),
+					.BASE_COLOR = mesh->BASE_COLOR,
+					.TIP_COLOR = mesh->TIP_COLOR,
+					.PATCH_BASE_COLOR = mesh -> PATCH_BASE_COLOR,
+					.PATCH_TIP_COLOR = mesh -> PATCH_TIP_COLOR,
+				});
 			}
 
 			for (uint32_t index = 0; index < framesConfiguration.maxFramesInFlight; index++) {
@@ -825,6 +817,7 @@ class Simulation {
 				framesConfiguration.uniformDataBuffers[index].deviceAddress = vkGetBufferDeviceAddress(windowConfiguration.device, &uniformBDAInfo);
 			}
 
+
 			VkBufferCreateInfo uniformBufferCreateInfo{
 				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 				.size = sizeof(UniformData::Mesh) * meshes.size(),
@@ -846,14 +839,13 @@ class Simulation {
 			uniformData.meshHandle.deviceAddress = vkGetBufferDeviceAddress(windowConfiguration.device, &uniformBDAInfo);
 
 			memcpy(uniformData.meshHandle.allocationInfo.pMappedData, uniformData.meshData.data(), uniformData.meshData.size() * sizeof(UniformData::Mesh));
-
-			loadTextures();
 		}
 
 		struct PushConstants {
 			VkDeviceAddress frameBDA;
 			VkDeviceAddress meshBDA;
 			uint32_t meshIndex;
+			int instanceCount;
 		};
 
 		void setupPipeline() {
@@ -1159,21 +1151,24 @@ class Simulation {
 
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+				int _instanceCount = 0;
 				for (uint32_t index = 0; index < meshes.size(); index++)
 				{
 					PushConstants pc{};
 					pc.frameBDA = framesConfiguration.uniformDataBuffers[framesConfiguration.frameIndex].deviceAddress;
 					pc.meshBDA = uniformData.meshHandle.deviceAddress;
 					pc.meshIndex = index; // index of the mesh in the buffer
+					pc.instanceCount = _instanceCount + meshes[index].userData["count"];
 
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSetTex, 0, nullptr);
 					vkCmdBindIndexBuffer(commandBuffer, meshes[index].indicesBuffer, 0, VK_INDEX_TYPE_UINT16);
 					vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pc);
-					vkCmdDrawIndexed(commandBuffer, meshes[index]._indices.size(), 10000, 0, 0, 0);
+					vkCmdDrawIndexed(commandBuffer, meshes[index]._indices.size(), meshes[index].userData["count"], 0, 0, 0);
+				
+					_instanceCount = _instanceCount + meshes[index].userData["count"];
 				}
 
 				vkCmdEndRendering(commandBuffer);
-
 
 				ImGui::Render();
 				ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
@@ -1329,6 +1324,7 @@ class Simulation {
 
 		struct GrassStrand {};
 
+
 		std::vector< Mesh > meshes{};
 
 		std::vector<VkDescriptorImageInfo> textureDescriptors{};
@@ -1342,20 +1338,7 @@ class Simulation {
 			VkImageView view{ VK_NULL_HANDLE };
 			VkSampler sampler{ VK_NULL_HANDLE };
 		};
-
-		std::array< std::string, 3 > textureNames{
-			/*"redTexture.ktx",
-			"yellowTexture.ktx",
-			"blueTexture.ktx"*/
-			"mask.ktx",
-			"mask.ktx",
-			"mask.ktx"
-		};
-
-		std::array< Texture, 3 > textureList{
-
-		};
-
+		std::vector< Texture > textureList;
 
 		VkDescriptorPool imguiPool;
 		struct ExtensionsInterface {
@@ -1446,6 +1429,7 @@ class Simulation {
 
 				float windSpeed{};
 				float time{};
+				float fieldSize{ 25.0f };
 				glm::vec4 cameraPosition{};
 			} frame{};
 
@@ -1460,13 +1444,25 @@ class Simulation {
 			} frameHandle{};
 
 			struct Mesh {
-				glm::mat4 model{};
+				float segments;
+				float vertices;
+				int textureIndex;
+				bool patchyGrass;
 
-				float segments{};
-				float vertices{};
-				float chunkSize{};
+				glm::mat4 model;
 
-			} mesh{};
+				glm::vec3 BASE_COLOR;
+				float pad1;
+
+				glm::vec3 TIP_COLOR;
+				float pad2; 
+
+				glm::vec3 PATCH_BASE_COLOR;
+				float pad3; 
+
+				glm::vec3 PATCH_TIP_COLOR;
+				float pad4;
+			};
 
 			struct MeshHandle {
 				VkBuffer buffer{ VK_NULL_HANDLE };
@@ -1519,16 +1515,39 @@ public:
 		simulation.animate();
 	}
 
-	Mesh generateGrassStrand(int segmentsCount, int LODLevel) {
+	struct GrassInformation {
+		glm::fvec3 BASE_COLOR{ 0.02, 0.12, 0.01 };
+		glm::fvec3 TIP_COLOR{ 0.18, 0.32, 0.12 };
+		glm::fvec3 PATCH_BASE_COLOR{ 0.12, 0.08, 0.01 };
+		glm::fvec3 PATCH_TIP_COLOR{ 0.38, 0.32, 0.05 };
+		bool patchyGrass{ true };
+		std::string textureName{""};
+	};
+
+	Mesh generateGrassStrand(int layerIndex, std::vector< GrassInformation > info ) {
+		int grassStrandCount = 20000;
+		int totalCount = fmax( grassStrandCount, weights.size() );
+
+		float totalWeight = 0;
+		for (int i = 0; i < weights.size(); i++) {
+			totalWeight = totalWeight + weights[i];
+		}
+
 		Mesh mesh{};
-		float segments = segmentsCount;
+		float segments = 4; //LOD
 		float vertices = (segments + 1) * 2;
-		float chunkSize = 25.0;
 
 		mesh.userData["segments"] = segments;
 		mesh.userData["vertices"] = vertices;
-		mesh.userData["LOD"] = LODLevel;
-		mesh.userData["chunkSize"] = chunkSize;
+		mesh.userData["count"] = int(( weights[layerIndex] / totalWeight ) * totalCount) + 1; //LOD
+		mesh.BASE_COLOR = info[layerIndex].BASE_COLOR;
+		mesh.TIP_COLOR = info[layerIndex].TIP_COLOR;
+		mesh.textureName = info[layerIndex].textureName;
+		mesh.PATCH_BASE_COLOR = info[layerIndex].PATCH_BASE_COLOR;
+		mesh.PATCH_TIP_COLOR = info[layerIndex].PATCH_TIP_COLOR;
+		mesh.patchyGrass = info[layerIndex].patchyGrass;
+
+		std::cout << std::endl << mesh.userData["count"] << std::endl;
 
 		std::vector< uint16_t > indices{};
 		for (uint32_t index = 0; index < segments; index++) {
@@ -1558,22 +1577,37 @@ public:
 	}
 
 	void generateModels() {
-		//currently we just have one buffer, but we need to maintain multiple, for time being just use 1 LOD
-		LODLevel.insert(LODLevel.end(), {
-			20
+
+		std::vector< std::string > layers{
+			"Layer_1",
+			"Layer_2"
+		};
+
+		weights.insert(weights.end(), {
+			400, 
+			1
 		});
 
-		for (uint16_t index = 0; index < LODLevel.size(); index++) {
-			Mesh mesh = generateGrassStrand(LODLevel[index], index);
+		std::vector< GrassInformation > grassInformation{
+			{
+				
+			},
+			{
+				.textureName = "flower_2.ktx"
+			}
+		};
+
+		for (uint16_t index = 0; index < layers.size(); index++) {
+			Mesh mesh = generateGrassStrand( index, grassInformation );
 			models.push_back(mesh);
 		}
 	}
 
 public:
-	Simulation simulation{};
+	Simulation simulation;
 
-	std::vector< int > LODLevel{};
 	std::vector< Mesh > models{};
+	std::vector<int> weights{};
 };
 
 int main() {

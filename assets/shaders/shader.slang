@@ -13,6 +13,7 @@ struct VSOutput {
     float4 vGrassData : TEXCOORD3;
     float3 cameraPosition : TEXCOORD4;
     uint instanceID : TEXCOORD5;
+    int textureIndex : TEXCOORD6;
 };
 
 struct Frame {
@@ -20,22 +21,37 @@ struct Frame {
     float4x4 view;
     float windSpeed;
     float time;
-    float pad0;
+    float fieldSize;
     float pad1;
     float4 cameraPosition;
 };
 
 struct Mesh {
-    float4x4 model;
     float segments;
     float vertices;
-    float chunkSize;
+    int textureIndex;
+    bool patchyGrass;
+
+    float4x4 model;
+
+    float3 BASE_COLOR;
+    float pad1;
+
+    float3 TIP_COLOR;
+    float pad2;
+
+    float3 PATCH_BASE_COLOR;
+    float pad3;
+
+    float3 PATCH_TIP_COLOR;
+    float pad4;
 };
 
 struct PushConstants {
     Frame* frameBDA;   
-    Mesh* meshArray; 
-    uint   meshIndex;  
+    Mesh* meshArray;
+    uint meshIndex;
+    int instanceCount;
 };
 
 float3 hash(float3 p) {
@@ -145,11 +161,6 @@ float noise(in float3 p) {
                u.z);
 }
 
-const static float3 BASE_COLOR = float3(0.02, 0.12, 0.01);
-const static float3 TIP_COLOR = float3(0.18, 0.32, 0.12);
-const static float3 c2_base = float3(0.12, 0.08, 0.01);
-const static float3 c2_tip = float3(0.38, 0.32, 0.05);
-
 [shader("vertex")]
 VSOutput main(VSInput input, uniform PushConstants pc ) {
     VSOutput output;
@@ -159,7 +170,14 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
     float windSpeed = frame.windSpeed;
     float time = frame.time;
     float windControl = windSpeed * 0.15;
-    float chunkSize = currentMesh.chunkSize;
+    float fieldSize = frame.fieldSize;
+    int globalInstanceCount = pc.instanceCount;
+
+    float3 BASE_COLOR = currentMesh.BASE_COLOR;
+    float3 TIP_COLOR = currentMesh.TIP_COLOR;
+    float3 PATCH_BASE_COLOR = currentMesh.PATCH_BASE_COLOR;
+    float3 PATCH_TIP_COLOR = currentMesh.PATCH_TIP_COLOR;
+    bool patchyGrass = currentMesh.patchyGrass;
 
     float4x4 model = currentMesh.model;
     const float GRASS_VERTICES = currentMesh.vertices;
@@ -175,18 +193,34 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
     float zSide = float(zTest);
     float heightPercent = float(vertID - xTest) / (float(GRASS_SEGMENTS) * 2.0);
 
+    uint width1; uint height1;
+    textures[currentMesh.textureIndex].GetDimensions(width1, height1);
+
+
     // use the height and shape the width
-    float height = 2.0;
-    float width = 0.15;
-    width = width * easeOut( 1.0 - heightPercent, 4.0 );
+    float height = 0.9;
+    float width = 0.2;
+    if (currentMesh.textureIndex == -1) {
+        width = width * easeOut( 1.0 - heightPercent, 4.0 );
+
+        //good formula for leaves
+        //float x = saturate(heightPercent);
+        //float base = x * (1.0 - x) * 1.0;
+
+        //width = pow(base, 0.75);
+    }
+    else {
+        width = 1.0;
+        height = 1.5f;
+    }
 
     float x = (xSide - 0.5) * width;
     float y = heightPercent * height;
     float z = 0.0;
 
     // offsetting each instance
-    float2 hashedInstanceID = hash21(float( input.instanceID ));
-    float3 grassOffset = float3(hashedInstanceID.x, 0, hashedInstanceID.y) * chunkSize;
+    float2 hashedInstanceID = hash21(float( globalInstanceCount + input.instanceID ));
+    float3 grassOffset = float3(hashedInstanceID.x, 0, hashedInstanceID.y) * fieldSize;
 
     // generating world position of grass
     float3 grassWorldPosition = mul( model, float4(grassOffset, 1.0)).xyz;
@@ -210,7 +244,6 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
 
     float4 uv = float4(x, heightPercent, xSide, 0.0);
 
-   
     float3 windAxis = float3(cos(windAngle), 0.0, sin(windAngle));
     float windLeanAngle = windStrength * 1.5 * heightPercent;
 
@@ -240,17 +273,22 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
 
     float3 grassLocalNormal = mul( grassMatrix, float3(0.0, mul( curveRot90, curveGrad.yz )));
 
-    // A way to blend two color schemes for strands using noise value, vColor is being popoulated using this value
-    // useful to have patches of two different colors of grass strands
     float3 c1 = lerp(BASE_COLOR, TIP_COLOR, heightPercent);
-    // Dark "Burnt Umber" for the base (dead, dried out roots)
-    float3 c2 = lerp(c2_base, c2_tip, heightPercent);
+    float3 c2 = lerp(PATCH_BASE_COLOR, PATCH_TIP_COLOR, heightPercent);
     float noiseValue = noise(grassWorldPosition * 0.4);
 
     float3 grassLocalPosition = mul( grassMatrix, float3(x, y, z)) + grassOffset;
-    output.position = mul(frame.projection, mul(frame.view, mul( currentMesh.model, float4(grassLocalPosition, 1.0))));
-    output.color = lerp(c2, c1, smoothstep(-0.5, 0.3, noiseValue));
+    output.position = mul(frame.projection, mul(frame.view, mul(currentMesh.model, float4(grassLocalPosition, 1.0))));
+
+    if (patchyGrass) {
+        output.color = lerp(c2, c1, smoothstep(-0.5, 0.3, noiseValue));
+    }
+    else {
+        output.color = lerp(BASE_COLOR, TIP_COLOR, heightPercent);
+    }
+    
     output.vGrassData = float4(x, heightPercent, xSide, 0.0);
+    output.textureIndex = currentMesh.textureIndex;
 
     return output;
 }
@@ -258,8 +296,18 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
 [shader("fragment")]
 float4 main(VSOutput input) : SV_Target {
 
-    float grassX = input.vGrassData.x;
-    float3 baseColor = lerp( input.color * 0.75, input.color, smoothstep(0.125, 0.0, abs(grassX)));
+    float3 finalColor;
+    
+    float2 uv = 1.0 - input.vGrassData.zy;
+    if (input.textureIndex == -1) {
+        float grassX = input.vGrassData.x;
+        finalColor = lerp(input.color * 0.75, input.color, smoothstep(0.125, 0.0, abs(grassX)));
+    }
+    else {
+        float4 sampledColor = textures[input.textureIndex].Sample(uv).rgbw;
+        if (sampledColor.w < 0.5) discard;
+        finalColor = sampledColor.rgb;
+    }
 
-    return float4(baseColor, 1.0);
+    return float4(finalColor.rgb, 1.0);
 }
