@@ -1,23 +1,14 @@
-# Grass Field Simulation
+# Grass Field Simulation ( WIP )
 
 <img src="https://raw.githubusercontent.com/irrevocablesake/FoliageLab/refs/heads/master/images/Simulation.png" width="100%">
 
 A Grass Simulation Experiment written in **Vulkan**, based on - one of my previous [ project ]( https://irrevocablesake.github.io/Grass-Field-Simulation/ )
 
 ## Intuition
-Fluids are everywhere, water, honey, air, well anything that flows falls in that category. The goal was to implement a **2D Fluid** Simulation using **C++** and **Vulkan**, and later expand into **3D Fluid** Simulation. All of this is based on **Jos Stam Real-Time Fluid Dynamics** Technique. 
+Overall, so far with with the progress, this project is sort of a mini-replica of the original project. Why "sort of"? Because this implementation doesn't have a chunking / LOD system, but in some aspects it's similar like: hardware instancing and the wind mechanics. This project does get a little star point, because it allows use to replace a simple "grass strand" with texture of any "flower".
 
-So far with the progress, we start with a velocity field initialized Perlin Noise, using this velocity field we transport the density field. In between there are multiple passes to simulate proper flow of fluids with respect to laws of physics, since this is WIP - the physics is wonky but constant tweaks are being made so it becomes a better simulation.
+Hopefully, in the future this imiplementation supersedes the original project in terms of UI, Features and Algorithms.
 
 # Simulation
-
-
+Here is a video of how the simulation currently looks like:
 https://github.com/user-attachments/assets/1af9db01-0a11-425a-a9c3-428b8964e038
-
-
-
-## Resources
-- [ Fluid Dynamics NVIDIA ](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-38-fast-fluid-dynamics-simulation-gpu)
-- [ Fluid Simulation for Dummies ]( https://www.mikeash.com/pyblog/fluid-simulation-for-dummies.html )
-- [ Coding Train - Fluid Simulation ]( https://www.youtube.com/watch?v=alhpH6ECFvQ )
-
