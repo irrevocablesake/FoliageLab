@@ -5,9 +5,9 @@
 A Grass Simulation Experiment written in **Vulkan**, based on - one of my previous [ project ]( https://irrevocablesake.github.io/Grass-Field-Simulation/ )
 
 ## Intuition
-Overall, so far with with the progress, this project is sort of a mini-replica of the original project. Why "sort of"? Because this implementation doesn't have a chunking / LOD system, but in some aspects it's similar like: hardware instancing and the wind mechanics. This project does get a little star point, because it allows use to replace a simple "grass strand" with texture of any "flower".
+Overall, so far with with the progress, this project is sort of a **mini-replica** of the original project. Why "sort of"? Because this implementation doesn't have a chunking / LOD system, but in some aspects it's similar like: **hardware instancing** and the **wind mechanics**. This project does get a **little star point**, because it allows use to **replace** a simple "grass strand" with texture of any "flower".
 
-Hopefully, in the future this imiplementation supersedes the original project in terms of UI, Features and Algorithms.
+Hopefully, in the future this implementation supersedes the original project in terms of UI, Features and Algorithms.
 
 # Simulation
 Here is a video of how the simulation currently looks like:
