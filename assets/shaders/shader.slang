@@ -1,4 +1,4 @@
-struct VSInput {
+﻿struct VSInput {
     uint vertexID : SV_VertexID;
     uint instanceID : SV_InstanceID;
 };
@@ -30,7 +30,7 @@ struct Mesh {
     float segments;
     float vertices;
     int textureIndex;
-    bool patchyGrass;
+    int patchyGrass; 
 
     float4x4 model;
 
@@ -45,8 +45,10 @@ struct Mesh {
 
     float3 PATCH_TIP_COLOR;
     float pad4;
-};
 
+    int clump;           
+    float3 finalPadding; 
+};
 struct PushConstants {
     Frame* frameBDA;   
     Mesh* meshArray;
@@ -178,6 +180,7 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
     float3 PATCH_BASE_COLOR = currentMesh.PATCH_BASE_COLOR;
     float3 PATCH_TIP_COLOR = currentMesh.PATCH_TIP_COLOR;
     bool patchyGrass = currentMesh.patchyGrass;
+    bool clump = currentMesh.clump;
 
     float4x4 model = currentMesh.model;
     const float GRASS_VERTICES = currentMesh.vertices;
@@ -231,9 +234,23 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
          width = width * easeOut( 1.0 - heightPercent, 4.0 );
     }
 
+
     // height Variation
     float heightNoise = remap(noise(grassWorldPosition * 1.0), -1.0, 1.0, 0.8, 1.2);
     height *= heightNoise;
+
+    if (clump) {
+        float n = noise(grassWorldPosition * 0.3) * 0.5 + 0.5;
+        float clumpFactor = smoothstep(0.1, 0.9, n); // Wider range
+
+        if (clumpFactor < 0.7) {
+            height = 0;
+            y = 0;
+            x = 0;
+            width = 0;
+        }
+   }
+
 
     // hashing world position for random value
     float3 hashVal = hash(grassWorldPosition);
@@ -293,6 +310,17 @@ VSOutput main(VSInput input, uniform PushConstants pc ) {
     return output;
 }
 
+float3 phongSpecular(float3 normal, float3 lightDirection, float3 viewDirection) {
+    float dotNL = saturate(dot(normal, lightDirection));
+
+    float3 r = normalize(reflect(-lightDirection, normal));
+    float phongValue = max(0.0, dot(viewDirection, r));
+    phongValue = pow(phongValue, 32.0);
+
+    float3 specular = dotNL * float3(phongValue);
+    return specular;
+}
+
 [shader("fragment")]
 float4 main(VSOutput input) : SV_Target {
 
@@ -302,6 +330,7 @@ float4 main(VSOutput input) : SV_Target {
     if (input.textureIndex == -1) {
         float grassX = input.vGrassData.x;
         finalColor = lerp(input.color * 0.75, input.color, smoothstep(0.125, 0.0, abs(grassX)));
+
     }
     else {
         float4 sampledColor = textures[input.textureIndex].Sample(uv).rgbw;
@@ -310,4 +339,65 @@ float4 main(VSOutput input) : SV_Target {
     }
 
     return float4(finalColor.rgb, 1.0);
+}
+
+struct SkyOutput {
+    float4 position : SV_POSITION;
+    float2 uv : TEXCOORD0;
+};
+
+[shader("vertex")]
+SkyOutput vs_sky(uint vertexID: SV_VertexID) {
+    SkyOutput output;
+    // This trick generates a triangle that covers the whole screen
+    output.uv = float2((vertexID << 1) & 2, vertexID & 2);
+    output.position = float4(output.uv * 2.0f - 1.0f, 1.0f, 1.0f);
+    output.uv.y = 1.0 - output.uv.y;
+    return output;
+}
+
+[shader("fragment")]
+float4 ps_sky(SkyOutput input) : SV_Target {
+
+    float2 uv = input.uv;
+
+    float3 topColor = float3(0.15, 0.25, 0.45);    // dusky blue
+    float3 midColor = float3(0.95, 0.55, 0.25);    // orange
+    float3 bottomColor = float3(0.35, 0.50, 0.20); // meadow green
+
+    float t = uv.y;
+
+    float3 skyColor;
+    if (t < 0.5) {
+        skyColor = lerp(bottomColor, midColor, t * 2.0);
+    } else {
+        skyColor = lerp(midColor, topColor, (t - 0.5) * 2.0);
+    }
+
+    float falloff = pow(1.0 - uv.y, 2.0);
+    skyColor *= lerp(1.0, 0.75, falloff);
+
+    float n = frac(sin(dot(uv * 200.0, float2(12.9898, 78.233))) * 43758.5453);
+    skyColor += (n - 0.5) * 0.015;
+
+    float luminance = dot(skyColor, float3(0.299, 0.587, 0.114));
+    float desat = smoothstep(0.0, 0.4, uv.y);
+    skyColor = lerp(float3(luminance, luminance, luminance), skyColor, desat);
+
+    float2 sunPos = float2(0.7, 0.8);
+    float dist = length(uv - sunPos);
+
+    float sunCore = smoothstep(0.03, 0.0, dist);
+
+    float sunGlow = smoothstep(0.25, 0.0, dist);
+
+    float3 sunColor = float3(1.0, 0.85, 0.55);
+
+    skyColor += sunColor * sunCore * 2.5; // intense core
+    skyColor += sunColor * sunGlow * 0.5; // soft spread
+
+    float glare = exp(-abs(uv.y - sunPos.y) * 60.0) * smoothstep(0.4, 0.0, dist);
+    skyColor += sunColor * glare * 0.25;
+
+    return float4(skyColor, 1.0);
 }

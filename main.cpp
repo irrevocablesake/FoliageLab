@@ -106,6 +106,7 @@ public:
 	std::string textureName{};
 	int textureIndex = -1;
 	bool patchyGrass = false;
+	bool clump = false;
 };
 
 class UserInterface {
@@ -499,6 +500,29 @@ class Simulation {
 			};
 
 			validationHelpers.validateResult(vkCreateShaderModule( windowConfiguration.device, &shaderModuleCreateInfo, nullptr, &shaderModule), "Failed to Create Shader Module");
+		
+			
+			Slang::ComPtr<slang::IEntryPoint> vsSkyEntryPoint;
+			slangModule->findEntryPointByName("vs_sky", vsSkyEntryPoint.writeRef());
+
+			Slang::ComPtr<slang::IEntryPoint> psSkyEntryPoint;
+			slangModule->findEntryPointByName("ps_sky", psSkyEntryPoint.writeRef());
+
+			slang::IComponentType* skyComponents[] = { slangModule, vsSkyEntryPoint, psSkyEntryPoint };
+			Slang::ComPtr<slang::IComponentType> skyProgram;
+			slangSession->createCompositeComponentType(skyComponents, 3, skyProgram.writeRef());
+
+			Slang::ComPtr<ISlangBlob> skySpirv;
+			skyProgram->getTargetCode(0, skySpirv.writeRef());
+
+			VkShaderModuleCreateInfo skyInfo{
+				.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+				.codeSize = skySpirv->getBufferSize(),
+				.pCode = (uint32_t*)skySpirv->getBufferPointer()
+			};
+			vkCreateShaderModule( windowConfiguration.device, &skyInfo, nullptr, &skyModule);
+
+			
 		}
 
 		void loadTextures() {
@@ -792,6 +816,7 @@ class Simulation {
 					.TIP_COLOR = mesh->TIP_COLOR,
 					.PATCH_BASE_COLOR = mesh -> PATCH_BASE_COLOR,
 					.PATCH_TIP_COLOR = mesh -> PATCH_TIP_COLOR,
+					.clump = mesh -> clump
 				});
 			}
 
@@ -847,6 +872,154 @@ class Simulation {
 			uint32_t meshIndex;
 			int instanceCount;
 		};
+
+		void setupPipelineSky() {
+
+
+			std::vector<char> initialData;
+
+			std::ifstream file("pipelineSky.cache", std::ios::binary | std::ios::ate);
+			if (file.is_open()) {
+				size_t size = file.tellg();
+				initialData.resize(size);
+				file.seekg(0);
+				file.read(initialData.data(), size);
+				file.close();
+			}
+
+			VkPipelineCacheCreateInfo cacheInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+				.initialDataSize = initialData.size(),
+				.pInitialData = initialData.empty() ? nullptr : initialData.data()
+			};
+
+			vkCreatePipelineCache(windowConfiguration.device, &cacheInfo, nullptr, &pipelineCache);
+
+			VkPushConstantRange pushConstantRange{
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+				.size = sizeof(PushConstants)
+			};
+
+			VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+				.setLayoutCount = 1,
+				.pSetLayouts = &descriptorSetLayoutTex,
+				.pushConstantRangeCount = 1,
+				.pPushConstantRanges = &pushConstantRange
+			};
+
+			validationHelpers.validateResult(vkCreatePipelineLayout(windowConfiguration.device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout), "Failed to Create Pipeline Layout");
+
+			VkPipelineVertexInputStateCreateInfo vertexInputState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+				.vertexBindingDescriptionCount = 0,
+				.pVertexBindingDescriptions = nullptr,
+				.vertexAttributeDescriptionCount = 0,
+				.pVertexAttributeDescriptions = nullptr
+			};
+
+			VkPipelineInputAssemblyStateCreateInfo inputAssemblyState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+				.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+			};
+
+			std::vector< VkPipelineShaderStageCreateInfo > shaderStages{
+				{
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage = VK_SHADER_STAGE_VERTEX_BIT,
+					.module = skyModule,
+					.pName = "vs_sky"
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+					.module = skyModule,
+					.pName = "ps_sky"
+				}
+			};
+
+			std::vector< VkDynamicState > dynamicStates{
+				VK_DYNAMIC_STATE_VIEWPORT,
+				VK_DYNAMIC_STATE_SCISSOR
+			};
+
+			VkPipelineDynamicStateCreateInfo dynamicState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+				.dynamicStateCount = 2,
+				.pDynamicStates = dynamicStates.data()
+			};
+
+			VkPipelineViewportStateCreateInfo viewportState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+				.viewportCount = 1,
+				.scissorCount = 1
+			};
+
+			VkPipelineDepthStencilStateCreateInfo depthStencilState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+				.depthTestEnable = VK_TRUE,
+				.depthWriteEnable = VK_TRUE,
+				.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL
+			};
+
+			VkPipelineRenderingCreateInfo renderingCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+				.colorAttachmentCount = 1,
+				.pColorAttachmentFormats = &deviceInterface.logical.swapchainConfiguration.imageFormat,
+				.depthAttachmentFormat = depthAttachmentConfiguration.format
+			};
+
+			VkPipelineColorBlendAttachmentState blendAttachment{
+				.colorWriteMask = 0xF
+			};
+
+			VkPipelineColorBlendStateCreateInfo colorBlendState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+				.attachmentCount = 1,
+				.pAttachments = &blendAttachment
+			};
+
+			VkPipelineRasterizationStateCreateInfo rasterizationState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+				.cullMode = VK_CULL_MODE_BACK_BIT,
+				.frontFace = VK_FRONT_FACE_CLOCKWISE,
+				.lineWidth = 1.0f
+			};
+
+			VkPipelineMultisampleStateCreateInfo multisampleState{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+				.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+			};
+
+			VkGraphicsPipelineCreateInfo pipelineCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+				.pNext = &renderingCreateInfo,
+				.stageCount = 2,
+				.pStages = shaderStages.data(),
+				.pVertexInputState = &vertexInputState,
+				.pInputAssemblyState = &inputAssemblyState,
+				.pViewportState = &viewportState,
+				.pRasterizationState = &rasterizationState,
+				.pMultisampleState = &multisampleState,
+				.pDepthStencilState = &depthStencilState,
+				.pColorBlendState = &colorBlendState,
+				.pDynamicState = &dynamicState,
+				.layout = pipelineLayout
+			};
+
+			validationHelpers.validateResult(vkCreateGraphicsPipelines(windowConfiguration.device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipelineSky), "Failed to Create Graphics Pipeline");
+
+			std::cout << "Pipeline handle: " << pipeline << std::endl;
+
+			size_t cacheSize = 0;
+			vkGetPipelineCacheData(windowConfiguration.device, pipelineCache, &cacheSize, nullptr);
+
+			std::vector<char> cacheData(cacheSize);
+			vkGetPipelineCacheData(windowConfiguration.device, pipelineCache, &cacheSize, cacheData.data());
+
+			std::ofstream file2("pipelineSky.cache", std::ios::binary);
+			file2.write(cacheData.data(), cacheSize);
+		}
 
 		void setupPipeline() {
 
@@ -1149,6 +1322,9 @@ class Simulation {
 
 				vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
+				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineSky);
+				vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 				int _instanceCount = 0;
@@ -1269,6 +1445,11 @@ class Simulation {
 			ImGui::DestroyContext();
 		}
 
+		void adjustCamera() {
+			camera.position = glm::vec3(uniformData.frame.fieldSize / 2.0f, 4, uniformData.frame.fieldSize + 5.0);
+			camera.lookAt = glm::vec3(uniformData.frame.fieldSize / 2.0f, 0, 0);
+		}
+
 		void setup() {
 			setupLibraries();
 			setupInstance();
@@ -1281,6 +1462,7 @@ class Simulation {
 			setupSynchronization();
 			setupCommandBuffers();
 			loadShaders();
+			adjustCamera();
 		}
 	
 	public:
@@ -1310,16 +1492,19 @@ class Simulation {
 
 			glm::ivec2 windowSize{};
 
-			VkClearColorValue clearColor{ 0.0f, 0.0f, 0.0f, 0.0f };
+			VkClearColorValue clearColor{ 0.53f, 0.81f, 0.92f, 1.0f };
 			VkCommandPool commandPool{};
 		};
 
 		Slang::ComPtr< slang::IGlobalSession > slangGlobalSession;
 		VkShaderModule shaderModule{};
+		VkShaderModule skyModule{};
 
 
 		VkPipelineLayout pipelineLayout{};
 		VkPipeline pipeline{};
+		VkPipeline pipelineSky{};
+
 		VkPipelineCache pipelineCache{};
 
 		struct GrassStrand {};
@@ -1429,7 +1614,7 @@ class Simulation {
 
 				float windSpeed{};
 				float time{};
-				float fieldSize{ 25.0f };
+				float fieldSize{ 100.0f };
 				glm::vec4 cameraPosition{};
 			} frame{};
 
@@ -1447,21 +1632,17 @@ class Simulation {
 				float segments;
 				float vertices;
 				int textureIndex;
-				bool patchyGrass;
+				int patchyGrass; // Changed to int for 4-byte alignment
 
 				glm::mat4 model;
 
-				glm::vec3 BASE_COLOR;
-				float pad1;
+				glm::vec3 BASE_COLOR; float pad1;
+				glm::vec3 TIP_COLOR; float pad2;
+				glm::vec3 PATCH_BASE_COLOR; float pad3;
+				glm::vec3 PATCH_TIP_COLOR; float pad4;
 
-				glm::vec3 TIP_COLOR;
-				float pad2; 
-
-				glm::vec3 PATCH_BASE_COLOR;
-				float pad3; 
-
-				glm::vec3 PATCH_TIP_COLOR;
-				float pad4;
+				int clump;       
+				float pad5, pad6, pad7; 
 			};
 
 			struct MeshHandle {
@@ -1491,9 +1672,9 @@ class Simulation {
 
 	public:
 		struct Camera {
-			glm::vec3 position{ 25.0f, 7, 25.0f };
+			glm::vec3 position{ 12.5f, 4, 25.0f };
 			glm::vec3 cameraUp{ 0, 1, 0 };
-			glm::vec3 lookAt{ 10.0f, 0, 10.0f };
+			glm::vec3 lookAt{ 12.5f, 0, 0.0f };
 		} camera;
 
 	public:
@@ -1511,6 +1692,7 @@ public:
 		simulation.setup();
 		simulation.uploadModel(models);
 		simulation.setupPipeline();
+		simulation.setupPipelineSky();
 		simulation.setupUI();
 		simulation.animate();
 	}
@@ -1521,11 +1703,12 @@ public:
 		glm::fvec3 PATCH_BASE_COLOR{ 0.12, 0.08, 0.01 };
 		glm::fvec3 PATCH_TIP_COLOR{ 0.38, 0.32, 0.05 };
 		bool patchyGrass{ true };
+		bool clump{ false };
 		std::string textureName{""};
 	};
 
 	Mesh generateGrassStrand(int layerIndex, std::vector< GrassInformation > info ) {
-		int grassStrandCount = 20000;
+		int grassStrandCount = 200000;
 		int totalCount = fmax( grassStrandCount, weights.size() );
 
 		float totalWeight = 0;
@@ -1546,6 +1729,7 @@ public:
 		mesh.PATCH_BASE_COLOR = info[layerIndex].PATCH_BASE_COLOR;
 		mesh.PATCH_TIP_COLOR = info[layerIndex].PATCH_TIP_COLOR;
 		mesh.patchyGrass = info[layerIndex].patchyGrass;
+		mesh.clump = info[layerIndex].clump;
 
 		std::cout << std::endl << mesh.userData["count"] << std::endl;
 
@@ -1584,7 +1768,7 @@ public:
 		};
 
 		weights.insert(weights.end(), {
-			400, 
+			20, 
 			1
 		});
 
@@ -1593,7 +1777,8 @@ public:
 				
 			},
 			{
-				.textureName = "flower_2.ktx"
+				.clump = true,
+				.textureName = "flower_2.ktx",
 			}
 		};
 
